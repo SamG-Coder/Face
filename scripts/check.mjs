@@ -5,23 +5,37 @@ import { compile } from '../vendor/webshader/compiler/compiler.js';
 const root = path.resolve(import.meta.dirname, '..');
 const source = await readFile(path.join(root, 'kernels', 'face.cu'), 'utf8');
 
-const artifact = compile(source, {
-  entry: 'GenerateFace',
-  workgroupSize: [128, 1, 1],
-  optimize: 'dependencies'
-});
+const entries = [
+  ['GenerateBaseHead', ['positions:vec4<f32>']],
+  ['SculptStage', ['source:vec4<f32>', 'destination:vec4<f32>']],
+  ['SmoothClay', ['source:vec4<f32>', 'destination:vec4<f32>']],
+  ['ComputeNormals', ['positions:vec4<f32>', 'normals:vec4<f32>']]
+];
 
-const bindings = artifact.metadata.bindings.map(b => `${b.name}:${b.elementType}`);
-const scalars = artifact.metadata.scalars.map(s => `${s.name}:${s.type}`);
+for (const [entry, expectedBindings] of entries) {
+  const artifact = compile(source, {
+    entry,
+    workgroupSize: [128, 1, 1],
+    optimize: 'dependencies'
+  });
 
-if (bindings.length !== 2 || !bindings[0].startsWith('positions:') || !bindings[1].startsWith('normals:')) {
-  throw new Error(`Unexpected buffer ABI: ${bindings.join(', ')}`);
+  const bindings = artifact.metadata.bindings.map(
+    b => `${b.name}:${b.elementType}`
+  );
+
+  if (bindings.join('|') !== expectedBindings.join('|')) {
+    throw new Error(
+      `${entry} buffer ABI mismatch. Expected ${expectedBindings.join(', ')}, got ${bindings.join(', ')}`
+    );
+  }
+
+  if (!artifact.wgsl?.includes('@compute')) {
+    throw new Error(`${entry} did not produce a compute shader.`);
+  }
+
+  console.log(
+    `${entry}: ${Buffer.byteLength(artifact.wgsl, 'utf8').toLocaleString()} WGSL bytes; ${bindings.join(', ')}`
+  );
 }
-if (!artifact.wgsl?.includes('@compute')) {
-  throw new Error('Compiler did not produce a compute shader.');
-}
 
-console.log('face.cu compiled successfully');
-console.log(`WGSL bytes: ${Buffer.byteLength(artifact.wgsl, 'utf8').toLocaleString()}`);
-console.log(`Bindings: ${bindings.join(', ')}`);
-console.log(`Scalars (${scalars.length}): ${scalars.join(', ')}`);
+console.log('iterative clay pipeline compiled successfully');
