@@ -5,6 +5,7 @@ const RINGS = 96;
 const LEVELS = 72;
 const VERTEX_COUNT = RINGS * LEVELS;
 const WORKGROUP = 128;
+const BLOCKS = [Math.ceil(VERTEX_COUNT / WORKGROUP), 1, 1];
 
 const controls = [
   { group: 'Cranium / silhouette', key: 'headWidth', label: 'Head width', min: .64, max: .92, step: .01, value: .78 },
@@ -53,6 +54,7 @@ function setStatus(text, state = '') {
 
 function buildControls() {
   let currentGroup = '';
+
   for (const control of controls) {
     if (control.group !== currentGroup) {
       currentGroup = control.group;
@@ -95,17 +97,38 @@ buildControls();
 drawConstruction(frontCanvas, profileCanvas, params);
 
 let runtime = null;
-let positions = null;
+let positionsA = null;
+let positionsB = null;
 let normals = null;
 let renderer = null;
-let invocation = null;
-let disposed = false;
-let rebuildQueued = false;
 
-function scalarSnapshot() {
+let baseInvocation = null;
+let sculptInvocation = null;
+let smoothInvocation = null;
+let normalInvocation = null;
+
+let disposed = false;
+let rebuildRequested = false;
+let plan = [];
+let planIndex = 0;
+let gpuName = 'WEBGPU';
+
+function baseScalars() {
   return {
     rings: RINGS,
     levels: LEVELS,
+    headWidth: params.headWidth,
+    headDepth: params.headDepth,
+    headHeight: params.headHeight
+  };
+}
+
+function sculptScalars(stage, strength) {
+  return {
+    rings: RINGS,
+    levels: LEVELS,
+    stage,
+    strength,
     headWidth: params.headWidth,
     headDepth: params.headDepth,
     headHeight: params.headHeight,
@@ -127,22 +150,90 @@ function scalarSnapshot() {
   };
 }
 
-function rebuildFace() {
-  if (!invocation || !runtime || disposed) return;
-  invocation.setScalars(scalarSnapshot());
-  runtime.batch()
-    .dispatch(invocation, [Math.ceil(VERTEX_COUNT / WORKGROUP), 1, 1])
-    .submit();
+function smoothScalars(strength) {
+  return {
+    rings: RINGS,
+    levels: LEVELS,
+    strength
+  };
+}
+
+function normalScalars() {
+  return {
+    rings: RINGS,
+    levels: LEVELS
+  };
+}
+
+function buildSculptPlan() {
+  const result = [];
+
+  const addStage = (stage, name, count, startStrength, endStrength, startSmooth, endSmooth) => {
+    for (let i = 0; i < count; i++) {
+      const t = count <= 1 ? 1 : i / (count - 1);
+      result.push({
+        stage,
+        name,
+        local: i + 1,
+        count,
+        strength: startStrength + (endStrength - startStrength) * t,
+        smooth: startSmooth + (endSmooth - startSmooth) * t
+      });
+    }
+  };
+
+  addStage(0, 'BLOCKOUT', 12, 0.24, 0.10, 0.18, 0.11);
+  addStage(1, 'SECONDARY', 14, 0.21, 0.09, 0.17, 0.10);
+  addStage(2, 'FEATURES', 16, 0.17, 0.07, 0.14, 0.08);
+  addStage(3, 'POLISH', 10, 0.085, 0.035, 0.12, 0.075);
+
+  return result;
+}
+
+function resetSculpt() {
+  if (!runtime || !baseInvocation || disposed) return;
+
+  baseInvocation.setScalars(baseScalars());
+  normalInvocation.setScalars(normalScalars());
+
+  const batch = runtime.batch();
+  batch.dispatch(baseInvocation, BLOCKS);
+  batch.dispatch(normalInvocation, BLOCKS);
+  batch.submit();
+
+  plan = buildSculptPlan();
+  planIndex = 0;
+  rebuildRequested = false;
+  setStatus('CLAY · BASE', 'ready');
+}
+
+function runSculptIteration() {
+  if (!runtime || !sculptInvocation || planIndex >= plan.length || disposed) return;
+
+  const step = plan[planIndex];
+
+  sculptInvocation.setScalars(sculptScalars(step.stage, step.strength));
+  smoothInvocation.setScalars(smoothScalars(step.smooth));
+  normalInvocation.setScalars(normalScalars());
+
+  const batch = runtime.batch();
+  batch.dispatch(sculptInvocation, BLOCKS);
+  batch.dispatch(smoothInvocation, BLOCKS);
+  batch.dispatch(normalInvocation, BLOCKS);
+  batch.submit();
+
+  planIndex++;
+
+  if (planIndex < plan.length) {
+    setStatus(`CLAY · ${step.name} ${step.local}/${step.count}`, 'ready');
+  } else {
+    setStatus(`READY · ${gpuName}`, 'ready');
+  }
 }
 
 function scheduleRebuild() {
   drawConstruction(frontCanvas, profileCanvas, params);
-  if (rebuildQueued) return;
-  rebuildQueued = true;
-  requestAnimationFrame(() => {
-    rebuildQueued = false;
-    rebuildFace();
-  });
+  rebuildRequested = true;
 }
 
 for (const [key, item] of inputs) {
@@ -160,12 +251,14 @@ function setAll(values) {
     item.input.value = String(params[control.key]);
     item.value.textContent = params[control.key].toFixed(control.step < .01 ? 3 : 2);
   }
+
   scheduleRebuild();
 }
 
 document.querySelector('#reset').addEventListener('click', () => setAll(defaults));
 
 let randomSeed = 0x51facade;
+
 function random01() {
   randomSeed ^= randomSeed << 13;
   randomSeed ^= randomSeed >>> 17;
@@ -175,10 +268,12 @@ function random01() {
 
 document.querySelector('#randomize').addEventListener('click', () => {
   const values = {};
+
   for (const c of controls) {
     const t = .12 + random01() * .76;
     values[c.key] = c.min + (c.max - c.min) * t;
   }
+
   setAll(values);
 });
 
@@ -191,6 +286,13 @@ for (const button of document.querySelectorAll('.mode')) {
 
 function animationFrame() {
   if (disposed) return;
+
+  if (rebuildRequested) {
+    resetSculpt();
+  } else if (planIndex < plan.length) {
+    runSculptIteration();
+  }
+
   renderer?.render();
   requestAnimationFrame(animationFrame);
 }
@@ -208,7 +310,9 @@ async function loadGpuRuntime() {
 }
 
 async function start() {
-  if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser. On Android, open the site in a current Chrome build with WebGPU support.');
+  if (!navigator.gpu) {
+    throw new Error('WebGPU is unavailable in this browser. On Android, open the site in a current Chrome build with WebGPU support.');
+  }
 
   const { GpuRuntime } = await loadGpuRuntime();
 
@@ -217,45 +321,103 @@ async function start() {
     onError: error => console.error('WebShader GPU error', error)
   });
 
-  setStatus('Loading face.cu…');
+  setStatus('Loading clay kernels…');
   const sourceResponse = await fetch('./kernels/face.cu');
-  if (!sourceResponse.ok) throw new Error(`Failed to load kernels/face.cu: HTTP ${sourceResponse.status}`);
+
+  if (!sourceResponse.ok) {
+    throw new Error(`Failed to load kernels/face.cu: HTTP ${sourceResponse.status}`);
+  }
+
   const source = await sourceResponse.text();
 
-  positions = runtime.createBuffer(new Float32Array(VERTEX_COUNT * 4), { label: 'Face CUDA positions' });
-  normals = runtime.createBuffer(new Float32Array(VERTEX_COUNT * 4), { label: 'Face CUDA normals' });
-
-  setStatus('Compiling CUDA → WGSL…');
-  const kernel = await runtime.kernel(source, {
-    entry: 'GenerateFace',
-    workgroupSize: [WORKGROUP, 1, 1]
-  });
-
-  invocation = kernel.bind(
-    { positions, normals },
-    scalarSnapshot()
+  positionsA = runtime.createBuffer(
+    new Float32Array(VERTEX_COUNT * 4),
+    { label: 'Clay positions A' }
+  );
+  positionsB = runtime.createBuffer(
+    new Float32Array(VERTEX_COUNT * 4),
+    { label: 'Clay positions B' }
+  );
+  normals = runtime.createBuffer(
+    new Float32Array(VERTEX_COUNT * 4),
+    { label: 'Clay normals' }
   );
 
-  rebuildFace();
+  setStatus('Compiling clay stages…');
+
+  const [baseKernel, sculptKernel, smoothKernel, normalKernel] = await Promise.all([
+    runtime.kernel(source, {
+      entry: 'GenerateBaseHead',
+      workgroupSize: [WORKGROUP, 1, 1]
+    }),
+    runtime.kernel(source, {
+      entry: 'SculptStage',
+      workgroupSize: [WORKGROUP, 1, 1]
+    }),
+    runtime.kernel(source, {
+      entry: 'SmoothClay',
+      workgroupSize: [WORKGROUP, 1, 1]
+    }),
+    runtime.kernel(source, {
+      entry: 'ComputeNormals',
+      workgroupSize: [WORKGROUP, 1, 1]
+    })
+  ]);
+
+  baseInvocation = baseKernel.bind(
+    { positions: positionsA },
+    baseScalars()
+  );
+
+  sculptInvocation = sculptKernel.bind(
+    { source: positionsA, destination: positionsB },
+    sculptScalars(0, .2)
+  );
+
+  smoothInvocation = smoothKernel.bind(
+    { source: positionsB, destination: positionsA },
+    smoothScalars(.15)
+  );
+
+  normalInvocation = normalKernel.bind(
+    { positions: positionsA, normals },
+    normalScalars()
+  );
 
   setStatus('Creating raw WebGPU renderer…');
   const topology = makeTopology(RINGS, LEVELS);
-  renderer = await createFaceRenderer(gpuCanvas, runtime, positions, normals, topology);
+
+  renderer = await createFaceRenderer(
+    gpuCanvas,
+    runtime,
+    positionsA,
+    normals,
+    topology
+  );
 
   const gpu = runtime.describe();
-  const name = gpu.description || gpu.device || gpu.vendor || 'WEBGPU';
-  setStatus(`READY · ${String(name).toUpperCase()}`, 'ready');
+  gpuName = String(gpu.description || gpu.device || gpu.vendor || 'WEBGPU').toUpperCase();
 
+  resetSculpt();
   requestAnimationFrame(animationFrame);
 }
 
 async function dispose() {
   if (disposed) return;
   disposed = true;
-  try { await runtime?.idle(); } catch {}
+
+  try {
+    await runtime?.idle();
+  } catch {}
+
   renderer?.dispose();
-  if (runtime && positions && !positions.destroyed) runtime.destroyBuffer(positions);
-  if (runtime && normals && !normals.destroyed) runtime.destroyBuffer(normals);
+
+  for (const buffer of [positionsA, positionsB, normals]) {
+    if (runtime && buffer && !buffer.destroyed) {
+      runtime.destroyBuffer(buffer);
+    }
+  }
+
   runtime?.dispose();
 }
 
