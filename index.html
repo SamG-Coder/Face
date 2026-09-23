@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#090b0f">
+  <title>Face // CUDA WebShader</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">SAMG-CODER / CUDA WEBSHADER</div>
+        <h1>PROCEDURAL HUMAN</h1>
+      </div>
+      <div id="status" class="status"><span class="dot"></span><span>Starting WebGPU…</span></div>
+    </header>
+
+    <main class="workspace">
+      <aside class="construction">
+        <div class="panel-title">
+          <span>01</span>
+          <div><b>Construction</b><small>same parameters, 2D guides</small></div>
+        </div>
+        <div class="drawing-card">
+          <div class="drawing-label">FRONT</div>
+          <canvas id="frontConstruction" width="300" height="340"></canvas>
+        </div>
+        <div class="drawing-card">
+          <div class="drawing-label">PROFILE</div>
+          <canvas id="profileConstruction" width="300" height="340"></canvas>
+        </div>
+      </aside>
+
+      <section class="viewport">
+        <canvas id="gpuCanvas"></canvas>
+
+        <div class="viewport-toolbar">
+          <button class="mode active" data-mode="smooth">Smooth</button>
+          <button class="mode" data-mode="planes">Planes</button>
+          <button class="mode" data-mode="wire">Wireframe</button>
+        </div>
+
+        <div class="viewport-meta">
+          <div><span>VERTICES</span><strong id="vertexCount">—</strong></div>
+          <div><span>TRIANGLES</span><strong id="triangleCount">—</strong></div>
+          <div><span>PIPELINE</span><strong>CUDA → WGSL → WEBGPU</strong></div>
+        </div>
+
+        <div class="drag-help">drag to orbit · wheel to zoom</div>
+      </section>
+
+      <aside class="controls">
+        <div class="panel-title">
+          <span>02</span>
+          <div><b>Anatomy controls</b><small>semantic construction parameters</small></div>
+        </div>
+
+        <div class="actions">
+          <button id="randomize">Random face</button>
+          <button id="reset">Reset</button>
+        </div>
+
+        <div id="controlList"></div>
+
+        <div class="note">
+          <b>Milestone 1</b>
+          <p>The surface is fixed-topology and generated entirely by <code>kernels/face.cu</code>. Eyes, nostrils, mouth cavity and ears become separate procedural patches in the next anatomy pass.</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <div id="fatal" hidden>
+    <div>
+      <b>Face failed to start</b>
+      <pre id="fatalText"></pre>
+    </div>
+  </div>
+
+  <script type="module" src="./src/app.js"></script>
+</body>
+</html>
