@@ -36,6 +36,10 @@ npm run build
 
 The static site is written to `dist/`.
 
+## Construction research
+
+The procedural anatomy rules used by the generator are documented in [docs/construction-research.md](docs/construction-research.md), with the portrait-drawing/sculpting references that each rule came from.
+
 ## Pipeline
 
 ```text
