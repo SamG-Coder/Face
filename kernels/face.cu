@@ -1,13 +1,6 @@
-// Procedural human head construction for CUDA WebShader.
-//
-// IMPORTANT: the head is NOT a deformed UV sphere.
-// Each horizontal row is built from two drawing constraints:
-//   - front-view silhouette width
-//   - side-view/profile depth
-// The ring between them is then constructed as a cross-section.
-//
-// That makes the same front/profile construction used by portrait artists the
-// actual geometry generator rather than a diagram beside an unrelated sphere.
+// Iterative clay head for CUDA WebShader.
+// Geometry evolves through repeated blockout -> secondary -> feature -> polish
+// passes. No pass solves the whole face in one shot.
 
 __device__ float clampf(float v, float lo, float hi) {
     return fminf(fmaxf(v, lo), hi);
@@ -65,7 +58,7 @@ __device__ float3 cross3(float3 a, float3 b) {
 }
 
 // -----------------------------------------------------------------------------
-// FRONT DRAWING: outer silhouette
+// CONSTRUCTION GUIDES
 // -----------------------------------------------------------------------------
 
 __device__ float silhouetteHalfWidth(
@@ -75,39 +68,34 @@ __device__ float silhouetteHalfWidth(
     float cheekWidth,
     float jawWidth)
 {
-    // Controls are normalized around the project's neutral/default face.
     float temple = templeWidth / 0.88f;
     float cheek = cheekWidth / 1.06f;
     float jaw = jawWidth / 0.72f;
-
     float scale;
 
-    if (y > 0.78f) {
-        // crown -> widest upper cranium
-        scale = segment(y, 1.00f, 0.78f, 0.30f, 0.93f);
+    // Rounded crown first. The earlier cage left a broad flat cap.
+    if (y > 0.88f) {
+        scale = segment(y, 1.00f, 0.88f, 0.08f, 0.72f);
+    } else if (y > 0.72f) {
+        scale = segment(y, 0.88f, 0.72f, 0.72f, 0.94f);
     } else if (y > 0.30f) {
-        // upper cranium -> temple
-        scale = segment(y, 0.78f, 0.30f, 0.93f, 0.84f * temple);
+        scale = segment(y, 0.72f, 0.30f, 0.94f, 0.84f * temple);
     } else if (y > -0.08f) {
-        // temple -> zygomatic width
         scale = segment(y, 0.30f, -0.08f, 0.84f * temple, 0.90f * cheek);
     } else if (y > -0.52f) {
-        // cheek -> mandibular body
         scale = segment(y, -0.08f, -0.52f, 0.90f * cheek, 0.72f * jaw);
     } else if (y > -0.76f) {
-        // jaw -> chin
-        scale = segment(y, -0.52f, -0.76f, 0.72f * jaw, 0.40f);
+        scale = segment(y, -0.52f, -0.76f, 0.72f * jaw, 0.42f);
     } else {
-        // close below the chin; this is under the visible face, not a neck nub
-        scale = segment(y, -0.76f, -0.94f, 0.40f, 0.16f);
+        scale = segment(y, -0.76f, -0.94f, 0.42f, 0.06f);
     }
 
     return headWidth * scale;
 }
 
-// -----------------------------------------------------------------------------
-// PROFILE DRAWING: large front-face plane and back cranium
-// -----------------------------------------------------------------------------
+__device__ float neutralHalfWidth(float y, float headWidth) {
+    return silhouetteHalfWidth(y, headWidth, 0.88f, 1.06f, 0.72f);
+}
 
 __device__ float baseProfileDepth(
     float y,
@@ -116,73 +104,137 @@ __device__ float baseProfileDepth(
     float muzzleProjection)
 {
     float depthScale = headDepth / 0.90f;
-    float chin = chinProjection / 1.00f;
-    float muzzle = muzzleProjection / 1.00f;
-
     float z;
 
-    if (y > 0.68f) {
-        z = segment(y, 1.00f, 0.68f, 0.10f, 0.31f);
+    if (y > 0.72f) {
+        z = segment(y, 1.00f, 0.72f, 0.06f, 0.29f);
     } else if (y > 0.18f) {
-        // forehead gently recedes toward brow
-        z = segment(y, 0.68f, 0.18f, 0.31f, 0.36f);
+        z = segment(y, 0.72f, 0.18f, 0.29f, 0.35f);
     } else if (y > 0.08f) {
-        // glabella -> nasion break
-        z = segment(y, 0.18f, 0.08f, 0.36f, 0.30f);
+        z = segment(y, 0.18f, 0.08f, 0.35f, 0.30f);
     } else if (y > -0.32f) {
-        // maxilla plane behind the separate nose wedge
         z = segment(y, 0.08f, -0.32f, 0.30f, 0.29f);
     } else if (y > -0.49f) {
-        // subnasal -> upper denture mass
-        z = segment(y, -0.32f, -0.49f, 0.29f, 0.33f * muzzle);
+        z = segment(
+            y, -0.32f, -0.49f,
+            0.29f, 0.32f * muzzleProjection);
     } else if (y > -0.60f) {
-        z = segment(y, -0.49f, -0.60f, 0.33f * muzzle, 0.30f);
+        z = segment(
+            y, -0.49f, -0.60f,
+            0.32f * muzzleProjection, 0.29f);
     } else if (y > -0.72f) {
-        // labiomental recess -> chin
-        z = segment(y, -0.60f, -0.72f, 0.27f, 0.36f * chin);
+        z = segment(
+            y, -0.60f, -0.72f,
+            0.27f, 0.34f * chinProjection);
     } else {
-        z = segment(y, -0.72f, -0.94f, 0.36f * chin, 0.10f);
+        z = segment(
+            y, -0.72f, -0.94f,
+            0.34f * chinProjection, 0.06f);
     }
 
     return z * depthScale;
 }
 
+__device__ float neutralProfileDepth(float y, float headDepth) {
+    return baseProfileDepth(y, headDepth, 1.0f, 1.0f);
+}
+
 __device__ float sidePlaneDepth(float y, float headDepth) {
     float depthScale = headDepth / 0.90f;
 
-    if (y > 0.55f) {
-        return segment(y, 1.00f, 0.55f, -0.04f, -0.08f) * depthScale;
+    if (y > 0.58f) {
+        return segment(y, 1.00f, 0.58f, -0.02f, -0.075f) * depthScale;
     }
-    if (y > -0.45f) {
-        return -0.08f * depthScale;
+
+    if (y > -0.46f) {
+        return -0.075f * depthScale;
     }
-    return segment(y, -0.45f, -0.94f, -0.08f, -0.02f) * depthScale;
+
+    return segment(y, -0.46f, -0.94f, -0.075f, -0.015f) * depthScale;
 }
 
 __device__ float backCraniumDepth(float y, float headDepth) {
     float depthScale = headDepth / 0.90f;
     float d;
 
-    if (y > 0.76f) {
-        d = segment(y, 1.00f, 0.76f, 0.30f, 0.72f);
+    if (y > 0.86f) {
+        d = segment(y, 1.00f, 0.86f, 0.08f, 0.54f);
+    } else if (y > 0.62f) {
+        d = segment(y, 0.86f, 0.62f, 0.54f, 0.77f);
     } else if (y > 0.18f) {
-        d = segment(y, 0.76f, 0.18f, 0.72f, 0.83f);
+        d = segment(y, 0.62f, 0.18f, 0.77f, 0.82f);
     } else if (y > -0.42f) {
-        d = segment(y, 0.18f, -0.42f, 0.83f, 0.67f);
+        d = segment(y, 0.18f, -0.42f, 0.82f, 0.65f);
     } else if (y > -0.72f) {
-        d = segment(y, -0.42f, -0.72f, 0.67f, 0.40f);
+        d = segment(y, -0.42f, -0.72f, 0.65f, 0.37f);
     } else {
-        d = segment(y, -0.72f, -0.94f, 0.40f, 0.13f);
+        d = segment(y, -0.72f, -0.94f, 0.37f, 0.06f);
     }
 
     return d * depthScale;
 }
 
+__device__ float4 constructionPoint(
+    float u,
+    float v,
+    float headWidth,
+    float headDepth,
+    float headHeight,
+    float templeWidth,
+    float cheekWidth,
+    float jawWidth,
+    float muzzleProjection,
+    float chinProjection,
+    int neutral)
+{
+    const float PI = 3.14159265358979323846f;
+
+    float yN = lerpf(-0.94f, 1.00f, v);
+    float y = yN * headHeight;
+
+    float halfWidth = neutral != 0
+        ? neutralHalfWidth(yN, headWidth)
+        : silhouetteHalfWidth(
+            yN, headWidth, templeWidth, cheekWidth, jawWidth);
+
+    float theta = u * PI * 2.0f;
+    float s = sinf(theta);
+    float c = cosf(theta);
+    float x = s * halfWidth;
+
+    float sideZ = sidePlaneDepth(yN, headDepth);
+    float z;
+
+    if (c >= 0.0f) {
+        // Neutral lump stays rounder. Primary sculpt later cuts the side planes.
+        float xn = absf_local(x) / fmaxf(halfWidth, 0.0001f);
+        float start = neutral != 0 ? 0.18f : 0.38f;
+        float frontBlend = 1.0f;
+
+        if (xn > start) {
+            frontBlend = 1.0f - smooth01(
+                (xn - start) / (1.0f - start));
+        }
+
+        float centerZ = neutral != 0
+            ? neutralProfileDepth(yN, headDepth)
+            : baseProfileDepth(
+                yN, headDepth, chinProjection, muzzleProjection);
+
+        z = lerpf(sideZ, centerZ, frontBlend);
+    } else {
+        float back = backCraniumDepth(yN, headDepth);
+        z = sideZ - back * smooth01(-c);
+    }
+
+    return make_float4(x, y, z, 1.0f);
+}
+
 // -----------------------------------------------------------------------------
-// FRONT-FACE FORMS: still planar/constructional, but placed on the cage above.
+// SECONDARY FORMS
 // -----------------------------------------------------------------------------
 
-__device__ float frontFeatureDepth(
+__device__ float secondaryDepth(
     float x,
     float y,
     float headWidth,
@@ -193,98 +245,64 @@ __device__ float frontFeatureDepth(
     float noseProjection,
     float noseWidth,
     float cheekProjection,
-    float mouthWidth,
-    float upperLip,
-    float lowerLip)
+    float mouthWidth)
 {
     float z = 0.0f;
 
-    // Five-eye scaffold: default eye full width ~1/5 of the front head width.
-    float eyeSizeScale = eyeWidth / 0.92f;
-    float eyeHalf = headWidth * 0.18f * eyeSizeScale;
+    float eyeHalf = headWidth * 0.18f * (eyeWidth / 0.92f);
     float eyeCenter = eyeHalf * 2.0f * (eyeSpacing / 0.29f);
-    float innerCorner = fmaxf(eyeCenter - eyeHalf, headWidth * 0.10f);
+    float innerCorner = fmaxf(
+        eyeCenter - eyeHalf,
+        headWidth * 0.10f);
 
-    // Eye orbit: a broad shallow cavity.
-    float socketRx = eyeHalf * 1.22f;
-    float socketRy = 0.115f;
-    float leftSocket = compactEllipse(
-        x, y, -eyeCenter, 0.07f,
-        socketRx, socketRy, 0.20f);
-    float rightSocket = compactEllipse(
-        x, y, eyeCenter, 0.07f,
-        socketRx, socketRy, 0.20f);
+    float socketRx = eyeHalf * 1.28f;
+    float socketRy = 0.125f;
 
-    z -= socketDepth * 0.48f * (leftSocket + rightSocket);
+    float socketL = compactEllipse(
+        x, y, -eyeCenter, 0.065f,
+        socketRx, socketRy, 0.16f);
+    float socketR = compactEllipse(
+        x, y, eyeCenter, 0.065f,
+        socketRx, socketRy, 0.16f);
 
-    // Eyeball mass implied inside the socket so the first blockout does not
-    // read as two empty holes. Explicit eyeball geometry comes next.
-    float eyeBallRx = eyeHalf * 0.78f;
-    float eyeBallRy = 0.062f;
-    float leftBall = compactEllipse(
-        x, y, -eyeCenter, 0.055f,
-        eyeBallRx, eyeBallRy, 0.16f);
-    float rightBall = compactEllipse(
-        x, y, eyeCenter, 0.055f,
-        eyeBallRx, eyeBallRy, 0.16f);
+    // Broad carving, not a hard hole.
+    z -= socketDepth * 0.31f * (socketL + socketR);
 
-    z += 0.022f * (leftBall + rightBall);
+    float browL = compactEllipse(
+        x, y, -eyeCenter, 0.185f,
+        socketRx * 1.04f, 0.080f, 0.08f);
+    float browR = compactEllipse(
+        x, y, eyeCenter, 0.185f,
+        socketRx * 1.04f, 0.080f, 0.08f);
 
-    // Brow roofs sit above the sockets. They are not connected into one
-    // giant central bridge.
-    float browRx = socketRx * 1.03f;
-    float browRy = 0.075f;
-    float leftBrow = compactEllipse(
-        x, y, -eyeCenter, 0.18f,
-        browRx, browRy, 0.12f);
-    float rightBrow = compactEllipse(
-        x, y, eyeCenter, 0.18f,
-        browRx, browRy, 0.12f);
+    z += 0.023f * browProjection * (browL + browR);
 
-    z += 0.027f * browProjection * (leftBrow + rightBrow);
-
-    // Small glabella / keystone and explicit nasion recess.
-    float glabella = compactEllipse(
-        x, y, 0.0f, 0.155f,
-        innerCorner * 0.55f, 0.070f, 0.10f);
-    float nasion = compactEllipse(
-        x, y, 0.0f, 0.085f,
-        innerCorner * 0.48f, 0.055f, 0.10f);
-
-    z += 0.014f * browProjection * glabella;
-    z -= 0.020f * nasion;
-
-    // Zygomatic plane lies outside/below the orbit.
-    float cheekX = eyeCenter * 1.30f;
+    float cheekX = eyeCenter * 1.28f;
     float cheekL = compactEllipse(
-        x, y, -cheekX, -0.10f,
-        headWidth * 0.25f, 0.20f, 0.10f);
+        x, y, -cheekX, -0.105f,
+        headWidth * 0.28f, 0.24f, 0.05f);
     float cheekR = compactEllipse(
-        x, y, cheekX, -0.10f,
-        headWidth * 0.25f, 0.20f, 0.10f);
+        x, y, cheekX, -0.105f,
+        headWidth * 0.28f, 0.24f, 0.05f);
 
-    z += 0.030f * cheekProjection * (cheekL + cheekR);
+    z += 0.024f * cheekProjection * (cheekL + cheekR);
 
-    // -----------------------------------------------------------------
-    // Nose wedge: profile depth is generated here, not by stretching the
-    // whole center of the head. Width is derived from inner eye corners.
-    // -----------------------------------------------------------------
+    // First nose pass is only the large wedge.
     float wingHalf = innerCorner * noseWidth;
 
-    if (y <= 0.09f && y >= -0.245f) {
-        float t = clampf((0.09f - y) / 0.335f, 0.0f, 1.0f);
-
+    if (y <= 0.09f && y >= -0.25f) {
+        float t = clampf((0.09f - y) / 0.34f, 0.0f, 1.0f);
         float topHalf = lerpf(
-            wingHalf * 0.27f,
-            wingHalf * 0.43f,
+            wingHalf * 0.30f,
+            wingHalf * 0.44f,
             t);
         float sideHalf = lerpf(
-            wingHalf * 0.62f,
-            wingHalf * 0.80f,
+            wingHalf * 0.66f,
+            wingHalf * 0.84f,
             t);
         float outerHalf = lerpf(
-            wingHalf * 0.76f,
-            wingHalf * 0.92f,
+            wingHalf * 0.82f,
+            wingHalf * 1.02f,
             t);
 
         float ax = absf_local(x);
@@ -293,96 +311,152 @@ __device__ float frontFeatureDepth(
         if (ax <= topHalf) {
             across = 1.0f;
         } else if (ax <= sideHalf) {
-            float s = (ax - topHalf) / fmaxf(sideHalf - topHalf, 0.0001f);
-            across = lerpf(1.0f, 0.46f, smooth01(s));
+            float q = (ax - topHalf) /
+                fmaxf(sideHalf - topHalf, 0.0001f);
+            across = lerpf(1.0f, 0.45f, smooth01(q));
         } else if (ax <= outerHalf) {
-            float s = (ax - sideHalf) / fmaxf(outerHalf - sideHalf, 0.0001f);
-            across = 0.46f * (1.0f - smooth01(s));
+            float q = (ax - sideHalf) /
+                fmaxf(outerHalf - sideHalf, 0.0001f);
+            across = 0.45f * (1.0f - smooth01(q));
         }
 
-        float projection = noseProjection *
-            lerpf(0.012f, 0.115f, smooth01(t));
-        z += across * projection;
+        z += across * noseProjection *
+            lerpf(0.008f, 0.092f, smooth01(t));
     }
 
-    // Ball and wings are separate from the wedge.
-    float tip = compactEllipse(
-        x, y, 0.0f, -0.275f,
-        fmaxf(wingHalf * 0.62f, 0.050f),
-        0.060f, 0.12f);
-    z += noseProjection * 0.078f * tip;
-
-    float alaX = wingHalf * 0.67f;
-    float alaRx = fmaxf(wingHalf * 0.40f, 0.040f);
-    float alaL = compactEllipse(
-        x, y, -alaX, -0.315f,
-        alaRx, 0.047f, 0.08f);
-    float alaR = compactEllipse(
-        x, y, alaX, -0.315f,
-        alaRx, 0.047f, 0.08f);
-    z += noseProjection * 0.024f * (alaL + alaR);
-
-    // -----------------------------------------------------------------
-    // Tooth cylinder / muzzle first, then subtle lip volumes.
-    // -----------------------------------------------------------------
+    // Broad tooth-cylinder support only.
     float mouthHalf = eyeCenter * mouthWidth;
-
     float muzzle = compactEllipse(
         x, y, 0.0f, -0.465f,
-        fmaxf(mouthHalf * 1.10f, 0.18f),
-        0.165f, 0.12f);
-    z += 0.026f * muzzle;
+        fmaxf(mouthHalf * 1.18f, 0.20f),
+        0.185f, 0.04f);
 
-    float philtrum = compactEllipse(
-        x, y, 0.0f, -0.405f,
-        fmaxf(wingHalf * 0.28f, 0.034f),
-        0.050f, 0.10f);
-    z -= 0.007f * philtrum;
-
-    float upperCenter = compactEllipse(
-        x, y, 0.0f, -0.485f,
-        fmaxf(mouthHalf * 0.24f, 0.042f),
-        0.030f, 0.10f);
-    float upperL = compactEllipse(
-        x, y, -mouthHalf * 0.48f, -0.490f,
-        fmaxf(mouthHalf * 0.38f, 0.052f),
-        0.033f, 0.08f);
-    float upperR = compactEllipse(
-        x, y, mouthHalf * 0.48f, -0.490f,
-        fmaxf(mouthHalf * 0.38f, 0.052f),
-        0.033f, 0.08f);
-
-    z += upperLip * 0.010f *
-        (1.10f * upperCenter + 0.70f * (upperL + upperR));
-
-    float lowerL = compactEllipse(
-        x, y, -mouthHalf * 0.21f, -0.548f,
-        fmaxf(mouthHalf * 0.44f, 0.060f),
-        0.038f, 0.08f);
-    float lowerR = compactEllipse(
-        x, y, mouthHalf * 0.21f, -0.548f,
-        fmaxf(mouthHalf * 0.44f, 0.060f),
-        0.038f, 0.08f);
-
-    z += lowerLip * 0.014f * (lowerL + lowerR);
-
-    // Curved mouth seam around the tooth cylinder. Very shallow at blockout
-    // level; no giant black horizontal trench.
-    float axMouth = absf_local(x);
-    if (axMouth < mouthHalf) {
-        float xt = axMouth / fmaxf(mouthHalf, 0.0001f);
-        float seamY = -0.515f + 0.012f * xt * xt;
-        float dy = absf_local(y - seamY) / 0.015f;
-        float seam = (1.0f - smooth01(dy)) * (1.0f - smooth01(xt));
-        z -= 0.0045f * seam;
-    }
+    z += 0.020f * muzzle;
 
     return z;
 }
 
-__device__ float4 facePoint(
+// -----------------------------------------------------------------------------
+// TERTIARY FORMS
+// -----------------------------------------------------------------------------
+
+__device__ float tertiaryDepth(
+    float x,
+    float y,
+    float headWidth,
+    float eyeSpacing,
+    float eyeWidth,
+    float browProjection,
+    float noseProjection,
+    float noseWidth,
+    float mouthWidth,
+    float upperLip,
+    float lowerLip)
+{
+    float z = 0.0f;
+
+    float eyeHalf = headWidth * 0.18f * (eyeWidth / 0.92f);
+    float eyeCenter = eyeHalf * 2.0f * (eyeSpacing / 0.29f);
+    float innerCorner = fmaxf(
+        eyeCenter - eyeHalf,
+        headWidth * 0.10f);
+    float wingHalf = innerCorner * noseWidth;
+    float mouthHalf = eyeCenter * mouthWidth;
+
+    // Subtle orbital fullness so sockets stop reading as empty pits.
+    float eyeBallRx = eyeHalf * 0.76f;
+    float eyeBallRy = 0.058f;
+    float eyeL = compactEllipse(
+        x, y, -eyeCenter, 0.050f,
+        eyeBallRx, eyeBallRy, 0.12f);
+    float eyeR = compactEllipse(
+        x, y, eyeCenter, 0.050f,
+        eyeBallRx, eyeBallRy, 0.12f);
+    z += 0.016f * (eyeL + eyeR);
+
+    float glabella = compactEllipse(
+        x, y, 0.0f, 0.150f,
+        innerCorner * 0.58f, 0.070f, 0.05f);
+    float nasion = compactEllipse(
+        x, y, 0.0f, 0.083f,
+        innerCorner * 0.50f, 0.052f, 0.05f);
+
+    z += 0.010f * browProjection * glabella;
+    z -= 0.012f * nasion;
+
+    float tip = compactEllipse(
+        x, y, 0.0f, -0.278f,
+        fmaxf(wingHalf * 0.66f, 0.052f),
+        0.062f, 0.08f);
+    z += noseProjection * 0.054f * tip;
+
+    float alaX = wingHalf * 0.68f;
+    float alaRx = fmaxf(wingHalf * 0.42f, 0.040f);
+    float alaL = compactEllipse(
+        x, y, -alaX, -0.315f,
+        alaRx, 0.050f, 0.04f);
+    float alaR = compactEllipse(
+        x, y, alaX, -0.315f,
+        alaRx, 0.050f, 0.04f);
+    z += noseProjection * 0.018f * (alaL + alaR);
+
+    float philtrum = compactEllipse(
+        x, y, 0.0f, -0.405f,
+        fmaxf(wingHalf * 0.30f, 0.036f),
+        0.050f, 0.04f);
+    z -= 0.005f * philtrum;
+
+    float upperCenter = compactEllipse(
+        x, y, 0.0f, -0.485f,
+        fmaxf(mouthHalf * 0.24f, 0.044f),
+        0.032f, 0.04f);
+    float upperL = compactEllipse(
+        x, y, -mouthHalf * 0.46f, -0.490f,
+        fmaxf(mouthHalf * 0.39f, 0.052f),
+        0.034f, 0.04f);
+    float upperR = compactEllipse(
+        x, y, mouthHalf * 0.46f, -0.490f,
+        fmaxf(mouthHalf * 0.39f, 0.052f),
+        0.034f, 0.04f);
+
+    z += upperLip * 0.008f *
+        (1.05f * upperCenter + 0.66f * (upperL + upperR));
+
+    float lowerL = compactEllipse(
+        x, y, -mouthHalf * 0.20f, -0.548f,
+        fmaxf(mouthHalf * 0.45f, 0.060f),
+        0.040f, 0.04f);
+    float lowerR = compactEllipse(
+        x, y, mouthHalf * 0.20f, -0.548f,
+        fmaxf(mouthHalf * 0.45f, 0.060f),
+        0.040f, 0.04f);
+
+    z += lowerLip * 0.010f * (lowerL + lowerR);
+
+    // Very shallow curved mouth seam.
+    float ax = absf_local(x);
+    if (ax < mouthHalf) {
+        float xt = ax / fmaxf(mouthHalf, 0.0001f);
+        float seamY = -0.515f + 0.010f * xt * xt;
+        float dy = absf_local(y - seamY) / 0.016f;
+        float seam = (1.0f - smooth01(dy)) *
+            (1.0f - smooth01(xt));
+        z -= 0.0030f * seam;
+    }
+
+    // Labiomental break.
+    float groove = compactEllipse(
+        x, y, 0.0f, -0.615f,
+        headWidth * 0.25f, 0.058f, 0.03f);
+    z -= 0.010f * groove;
+
+    return z;
+}
+
+__device__ float4 targetPoint(
     float u,
     float v,
+    int stage,
     float headWidth,
     float headDepth,
     float headHeight,
@@ -402,99 +476,70 @@ __device__ float4 facePoint(
     float lowerLip,
     float chinProjection)
 {
+    float4 p = constructionPoint(
+        u, v,
+        headWidth, headDepth, headHeight,
+        templeWidth, cheekWidth, jawWidth,
+        muzzleProjection, chinProjection,
+        0);
+
+    if (stage <= 0) {
+        return p;
+    }
+
     const float PI = 3.14159265358979323846f;
-
-    // Linear rows: drawing landmarks stay where they were placed. This is the
-    // key change from the old spherical latitude mapping.
     float yN = lerpf(-0.94f, 1.00f, v);
-    float y = yN * headHeight;
-
-    float halfWidth = silhouetteHalfWidth(
-        yN,
-        headWidth,
-        templeWidth,
-        cheekWidth,
-        jawWidth);
-
     float theta = u * PI * 2.0f;
-    float s = sinf(theta);
     float c = cosf(theta);
 
-    float x = s * halfWidth;
-    float sideZ = sidePlaneDepth(yN, headDepth);
+    // Features only affect the actual front mask.
+    float facing = smooth01(c / 0.34f);
 
-    float z;
+    p.z += facing * secondaryDepth(
+        p.x, yN,
+        headWidth,
+        eyeSpacing,
+        eyeWidth,
+        socketDepth,
+        browProjection,
+        noseProjection,
+        noseWidth,
+        cheekProjection,
+        mouthWidth);
 
-    if (c >= 0.0f) {
-        // Front mask: a broad center plane with explicit side-plane falloff.
-        // This is the 3D equivalent of slicing the sides off the helmethead.
-        float xn = absf_local(x) / fmaxf(halfWidth, 0.0001f);
-        float frontPlane = 1.0f;
-
-        if (xn > 0.52f) {
-            frontPlane = 1.0f - smooth01((xn - 0.52f) / 0.48f);
-        }
-
-        float centerZ = baseProfileDepth(
-            yN,
-            headDepth,
-            chinProjection,
-            muzzleProjection);
-
-        z = lerpf(sideZ, centerZ, frontPlane);
-
-        float featureFacing = smooth01(c / 0.28f);
-        z += featureFacing * frontFeatureDepth(
-            x,
-            yN,
+    if (stage >= 2) {
+        p.z += facing * tertiaryDepth(
+            p.x, yN,
             headWidth,
             eyeSpacing,
             eyeWidth,
-            socketDepth,
             browProjection,
             noseProjection,
             noseWidth,
-            cheekProjection,
             mouthWidth,
             upperLip,
             lowerLip);
-    } else {
-        // Back of cranium is its own smooth cross-section. It does not inherit
-        // any face features or the old sphere's latitude pinching.
-        float back = backCraniumDepth(yN, headDepth);
-        float backT = smooth01((-c));
-        z = sideZ - back * backT;
     }
 
-    return make_float4(x, y, z, 1.0f);
+    return p;
 }
 
-__global__ void GenerateFace(
+// -----------------------------------------------------------------------------
+// GPU PASSES
+// -----------------------------------------------------------------------------
+
+__global__ void GenerateBaseHead(
     float4* positions,
-    float4* normals,
     unsigned int rings,
     unsigned int levels,
     float headWidth,
     float headDepth,
-    float headHeight,
-    float templeWidth,
-    float cheekWidth,
-    float jawWidth,
-    float eyeSpacing,
-    float eyeWidth,
-    float socketDepth,
-    float browProjection,
-    float noseProjection,
-    float noseWidth,
-    float cheekProjection,
-    float muzzleProjection,
-    float mouthWidth,
-    float upperLip,
-    float lowerLip,
-    float chinProjection)
+    float headHeight)
 {
-    unsigned int id = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int id =
+        blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int count = rings * levels;
+
     if (id >= count) return;
 
     unsigned int ix = id % rings;
@@ -503,65 +548,163 @@ __global__ void GenerateFace(
     float u = (float)ix / (float)rings;
     float v = (float)iy / (float)(levels - 1);
 
-    float4 p = facePoint(
+    positions[id] = constructionPoint(
         u, v,
         headWidth, headDepth, headHeight,
-        templeWidth, cheekWidth, jawWidth,
-        eyeSpacing, eyeWidth, socketDepth,
-        browProjection, noseProjection, noseWidth,
-        cheekProjection, muzzleProjection,
-        mouthWidth, upperLip, lowerLip, chinProjection);
+        0.88f, 1.06f, 0.72f,
+        1.0f, 1.0f,
+        1);
+}
 
-    positions[id] = p;
+__global__ void SculptStage(
+    const float4* source,
+    float4* destination,
+    unsigned int rings,
+    unsigned int levels,
+    int stage,
+    float strength,
+    float headWidth,
+    float headDepth,
+    float headHeight,
+    float templeWidth,
+    float cheekWidth,
+    float jawWidth,
+    float eyeSpacing,
+    float eyeWidth,
+    float socketDepth,
+    float browProjection,
+    float noseProjection,
+    float noseWidth,
+    float cheekProjection,
+    float muzzleProjection,
+    float mouthWidth,
+    float upperLip,
+    float lowerLip,
+    float chinProjection)
+{
+    unsigned int id =
+        blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int count = rings * levels;
 
-    // Finite-difference normal from the exact same construction surface.
-    float du = 0.0022f;
-    float dv = 0.0022f;
-    float v0 = clampf(v - dv, 0.0f, 1.0f);
-    float v1 = clampf(v + dv, 0.0f, 1.0f);
+    if (id >= count) return;
 
-    float4 pu0 = facePoint(
-        u - du, v,
+    unsigned int ix = id % rings;
+    unsigned int iy = id / rings;
+
+    float u = (float)ix / (float)rings;
+    float v = (float)iy / (float)(levels - 1);
+
+    float4 current = source[id];
+    float4 target = targetPoint(
+        u, v, stage,
         headWidth, headDepth, headHeight,
         templeWidth, cheekWidth, jawWidth,
         eyeSpacing, eyeWidth, socketDepth,
         browProjection, noseProjection, noseWidth,
         cheekProjection, muzzleProjection,
-        mouthWidth, upperLip, lowerLip, chinProjection);
-    float4 pu1 = facePoint(
-        u + du, v,
-        headWidth, headDepth, headHeight,
-        templeWidth, cheekWidth, jawWidth,
-        eyeSpacing, eyeWidth, socketDepth,
-        browProjection, noseProjection, noseWidth,
-        cheekProjection, muzzleProjection,
-        mouthWidth, upperLip, lowerLip, chinProjection);
-    float4 pv0 = facePoint(
-        u, v0,
-        headWidth, headDepth, headHeight,
-        templeWidth, cheekWidth, jawWidth,
-        eyeSpacing, eyeWidth, socketDepth,
-        browProjection, noseProjection, noseWidth,
-        cheekProjection, muzzleProjection,
-        mouthWidth, upperLip, lowerLip, chinProjection);
-    float4 pv1 = facePoint(
-        u, v1,
-        headWidth, headDepth, headHeight,
-        templeWidth, cheekWidth, jawWidth,
-        eyeSpacing, eyeWidth, socketDepth,
-        browProjection, noseProjection, noseWidth,
-        cheekProjection, muzzleProjection,
-        mouthWidth, upperLip, lowerLip, chinProjection);
+        mouthWidth, upperLip, lowerLip,
+        chinProjection);
+
+    float s = clampf(strength, 0.0f, 1.0f);
+
+    destination[id] = make_float4(
+        lerpf(current.x, target.x, s),
+        lerpf(current.y, target.y, s * 0.18f),
+        lerpf(current.z, target.z, s),
+        1.0f);
+}
+
+__global__ void SmoothClay(
+    const float4* source,
+    float4* destination,
+    unsigned int rings,
+    unsigned int levels,
+    float strength)
+{
+    unsigned int id =
+        blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int count = rings * levels;
+
+    if (id >= count) return;
+
+    unsigned int ix = id % rings;
+    unsigned int iy = id / rings;
+
+    unsigned int leftX =
+        ix == 0 ? rings - 1 : ix - 1;
+    unsigned int rightX =
+        ix + 1 == rings ? 0 : ix + 1;
+
+    unsigned int left = iy * rings + leftX;
+    unsigned int right = iy * rings + rightX;
+    unsigned int down =
+        iy == 0 ? id : (iy - 1) * rings + ix;
+    unsigned int up =
+        iy + 1 == levels ? id : (iy + 1) * rings + ix;
+
+    float4 p = source[id];
+    float4 a = source[left];
+    float4 b = source[right];
+    float4 c = source[down];
+    float4 d = source[up];
+
+    float avgX = (a.x + b.x + c.x + d.x) * 0.25f;
+    float avgZ = (a.z + b.z + c.z + d.z) * 0.25f;
+
+    // Preserve drawing landmark heights; blend mostly in depth, with a smaller
+    // silhouette relaxation in x.
+    float s = clampf(strength, 0.0f, 0.45f);
+
+    destination[id] = make_float4(
+        lerpf(p.x, avgX, s * 0.28f),
+        p.y,
+        lerpf(p.z, avgZ, s),
+        1.0f);
+}
+
+__global__ void ComputeNormals(
+    const float4* positions,
+    float4* normals,
+    unsigned int rings,
+    unsigned int levels)
+{
+    unsigned int id =
+        blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int count = rings * levels;
+
+    if (id >= count) return;
+
+    unsigned int ix = id % rings;
+    unsigned int iy = id / rings;
+
+    unsigned int leftX =
+        ix == 0 ? rings - 1 : ix - 1;
+    unsigned int rightX =
+        ix + 1 == rings ? 0 : ix + 1;
+
+    unsigned int left = iy * rings + leftX;
+    unsigned int right = iy * rings + rightX;
+    unsigned int down =
+        iy == 0 ? id : (iy - 1) * rings + ix;
+    unsigned int up =
+        iy + 1 == levels ? id : (iy + 1) * rings + ix;
+
+    float4 l = positions[left];
+    float4 r = positions[right];
+    float4 d = positions[down];
+    float4 u = positions[up];
 
     float3 tangentU = make_float3(
-        pu1.x - pu0.x,
-        pu1.y - pu0.y,
-        pu1.z - pu0.z);
+        r.x - l.x,
+        r.y - l.y,
+        r.z - l.z);
     float3 tangentV = make_float3(
-        pv1.x - pv0.x,
-        pv1.y - pv0.y,
-        pv1.z - pv0.z);
+        u.x - d.x,
+        u.y - d.y,
+        u.z - d.z);
 
     float3 n = normalize(cross3(tangentU, tangentV));
-    normals[id] = make_float4(n.x, n.y, n.z, 0.0f);
+
+    normals[id] = make_float4(
+        n.x, n.y, n.z, 0.0f);
 }
