@@ -1,19 +1,125 @@
-const TAU = Math.PI * 2;
-
-// The same construction landmarks used by kernels/face.cu.
-// Crown-to-hairline is approximately the top sixth; the visible face then
-// falls into roughly equal hairline/brow/nose/chin thirds.
-const CROWN = 0.96;
+const CROWN = 1.00;
 const HAIRLINE = 0.68;
 const BROW = 0.18;
 const EYE = 0.07;
 const NOSE = -0.32;
 const MOUTH = -0.49;
-const CHIN = -0.82;
+const CHIN = -0.76;
+const BOTTOM = -0.94;
+
+function smooth01(t) {
+  t = Math.max(0, Math.min(1, t));
+  return t * t * (3 - 2 * t);
+}
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function segment(y, yTop, yBottom, valueTop, valueBottom) {
+  return lerp(valueTop, valueBottom, smooth01((yTop - y) / (yTop - yBottom)));
+}
+
+function compactEllipse(x, y, cx, cy, rx, ry, inner) {
+  const dx = (x - cx) / rx;
+  const dy = (y - cy) / ry;
+  const d = dx * dx + dy * dy;
+  if (d >= 1) return 0;
+  if (d <= inner) return 1;
+  return 1 - smooth01((d - inner) / (1 - inner));
+}
+
+// Exact JS mirrors of the construction constraints in kernels/face.cu.
+function silhouetteHalfWidth(y, p) {
+  const temple = p.templeWidth / 0.88;
+  const cheek = p.cheekWidth / 1.06;
+  const jaw = p.jawWidth / 0.72;
+  let scale;
+
+  if (y > 0.78) scale = segment(y, 1.00, 0.78, 0.30, 0.93);
+  else if (y > 0.30) scale = segment(y, 0.78, 0.30, 0.93, 0.84 * temple);
+  else if (y > -0.08) scale = segment(y, 0.30, -0.08, 0.84 * temple, 0.90 * cheek);
+  else if (y > -0.52) scale = segment(y, -0.08, -0.52, 0.90 * cheek, 0.72 * jaw);
+  else if (y > -0.76) scale = segment(y, -0.52, -0.76, 0.72 * jaw, 0.40);
+  else scale = segment(y, -0.76, -0.94, 0.40, 0.16);
+
+  return p.headWidth * scale;
+}
+
+function baseProfileDepth(y, p) {
+  const depthScale = p.headDepth / 0.90;
+  const chin = p.chinProjection;
+  const muzzle = p.muzzleProjection;
+  let z;
+
+  if (y > 0.68) z = segment(y, 1.00, 0.68, 0.10, 0.31);
+  else if (y > 0.18) z = segment(y, 0.68, 0.18, 0.31, 0.36);
+  else if (y > 0.08) z = segment(y, 0.18, 0.08, 0.36, 0.30);
+  else if (y > -0.32) z = segment(y, 0.08, -0.32, 0.30, 0.29);
+  else if (y > -0.49) z = segment(y, -0.32, -0.49, 0.29, 0.33 * muzzle);
+  else if (y > -0.60) z = segment(y, -0.49, -0.60, 0.33 * muzzle, 0.30);
+  else if (y > -0.72) z = segment(y, -0.60, -0.72, 0.27, 0.36 * chin);
+  else z = segment(y, -0.72, -0.94, 0.36 * chin, 0.10);
+
+  return z * depthScale;
+}
+
+function centerFeatureDepth(y, p) {
+  const eyeHalf = p.headWidth * 0.18 * (p.eyeWidth / 0.92);
+  const eyeCenter = eyeHalf * 2 * (p.eyeSpacing / 0.29);
+  const innerCorner = Math.max(eyeCenter - eyeHalf, p.headWidth * 0.10);
+  const wingHalf = innerCorner * p.noseWidth;
+  const mouthHalf = eyeCenter * p.mouthWidth;
+
+  let z = 0;
+
+  z += 0.014 * p.browProjection *
+    compactEllipse(0, y, 0, 0.155, innerCorner * 0.55, 0.070, 0.10);
+  z -= 0.020 *
+    compactEllipse(0, y, 0, 0.085, innerCorner * 0.48, 0.055, 0.10);
+
+  if (y <= 0.09 && y >= -0.245) {
+    const t = Math.max(0, Math.min(1, (0.09 - y) / 0.335));
+    z += p.noseProjection * lerp(0.012, 0.115, smooth01(t));
+  }
+
+  z += p.noseProjection * 0.078 * compactEllipse(
+    0, y, 0, -0.275, Math.max(wingHalf * 0.62, 0.050), 0.060, 0.12
+  );
+
+  z += 0.026 * compactEllipse(
+    0, y, 0, -0.465, Math.max(mouthHalf * 1.10, 0.18), 0.165, 0.12
+  );
+
+  z -= 0.007 * compactEllipse(
+    0, y, 0, -0.405, Math.max(wingHalf * 0.28, 0.034), 0.050, 0.10
+  );
+
+  z += p.upperLip * 0.011 * compactEllipse(
+    0, y, 0, -0.485, Math.max(mouthHalf * 0.24, 0.042), 0.030, 0.10
+  );
+
+  const lowerRx = Math.max(mouthHalf * 0.44, 0.060);
+  z += p.lowerLip * 0.014 * (
+    compactEllipse(0, y, -mouthHalf * 0.21, -0.548, lowerRx, 0.038, 0.08) +
+    compactEllipse(0, y,  mouthHalf * 0.21, -0.548, lowerRx, 0.038, 0.08)
+  );
+
+  if (y > -0.53 && y < -0.50) {
+    z -= 0.0045 * (1 - smooth01(Math.abs(y + 0.515) / 0.015));
+  }
+
+  return z;
+}
+
+function centerProfileDepth(y, p) {
+  return baseProfileDepth(y, p) + centerFeatureDepth(y, p);
+}
 
 function setup(canvas) {
   const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
+  const w = canvas.width;
+  const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#0a0d12';
   ctx.fillRect(0, 0, w, h);
@@ -25,7 +131,7 @@ function setup(canvas) {
 function guide(ctx, y, x0, x1, label, strong = false) {
   ctx.save();
   ctx.strokeStyle = strong ? '#33445a' : '#243041';
-  ctx.lineWidth = strong ? 1.15 : 1;
+  ctx.lineWidth = strong ? 1.1 : 1;
   ctx.setLineDash([3, 5]);
   ctx.beginPath();
   ctx.moveTo(x0, y);
@@ -38,18 +144,7 @@ function guide(ctx, y, x0, x1, label, strong = false) {
   ctx.restore();
 }
 
-function ellipse(ctx, x, y, rx, ry, stroke = '#7ce2c0', alpha = 1) {
-  ctx.save();
-  ctx.globalAlpha = alpha;
-  ctx.strokeStyle = stroke;
-  ctx.lineWidth = 1.2;
-  ctx.beginPath();
-  ctx.ellipse(x, y, rx, ry, 0, 0, TAU);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function strokePath(ctx, points, color, width = 1.2, close = false) {
+function strokePolyline(ctx, points, color, width = 1.2) {
   if (!points.length) return;
   ctx.save();
   ctx.strokeStyle = color;
@@ -57,13 +152,17 @@ function strokePath(ctx, points, color, width = 1.2, close = false) {
   ctx.beginPath();
   ctx.moveTo(points[0][0], points[0][1]);
   for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
-  if (close) ctx.closePath();
   ctx.stroke();
   ctx.restore();
 }
 
-function mirrorPoints(points, cx) {
-  return points.map(([x, y]) => [cx - (x - cx), y]);
+function dot(ctx, x, y, color, r = 2.3) {
+  ctx.save();
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
 }
 
 export function drawConstruction(frontCanvas, profileCanvas, p) {
@@ -74,340 +173,200 @@ export function drawConstruction(frontCanvas, profileCanvas, p) {
 function drawFront(canvas, p) {
   const { ctx, w, h } = setup(canvas);
   const cx = w * 0.5;
-  const top = 28;
-  const bottom = h - 28;
+  const top = 27;
+  const bottom = h - 27;
   const H = bottom - top;
+  const sy = y => top + ((CROWN - y) / (CROWN - BOTTOM)) * H;
+  const xScale = 103;
+  const sx = x => cx + x * xScale;
 
-  const sy = n => top + ((CROWN - n) / (CROWN - CHIN)) * H;
-  const sx = n => cx + n * 94;
-
-  for (const [n, name, strong] of [
+  for (const [y, label, strong] of [
     [HAIRLINE, 'HAIR', false],
     [BROW, 'BROW', true],
     [EYE, 'EYES / MID', true],
     [NOSE, 'NOSE', true],
     [MOUTH, 'MOUTH', false],
     [CHIN, 'CHIN', true]
-  ]) {
-    guide(ctx, sy(n), 19, w - 19, name, strong);
+  ]) guide(ctx, sy(y), 17, w - 17, label, strong);
+
+  const right = [];
+  const left = [];
+  const sideRight = [];
+  const sideLeft = [];
+
+  for (let i = 0; i <= 110; i++) {
+    const y = CROWN + (BOTTOM - CROWN) * (i / 110);
+    const half = silhouetteHalfWidth(y, p);
+    right.push([sx(half), sy(y)]);
+    left.push([sx(-half), sy(y)]);
+    sideRight.push([sx(half * 0.52), sy(y)]);
+    sideLeft.push([sx(-half * 0.52), sy(y)]);
   }
 
-  // ------------------------------------------------------------------
-  // 1) HELMET HEAD / SILHOUETTE
-  // ------------------------------------------------------------------
-  const rightOutline = [
-    [cx, sy(CROWN)],
-    [sx(0.53 * p.headWidth), sy(0.82)],
-    [sx(0.82 * p.headWidth), sy(0.43)],
-    [sx(0.70 * p.headWidth * p.templeWidth), sy(BROW)],
-    [sx(0.72 * p.headWidth * p.cheekWidth), sy(-0.08)],
-    [sx(0.55 * p.headWidth * p.jawWidth), sy(-0.61)],
-    [sx(0.20 * p.headWidth), sy(CHIN)],
-    [cx, sy(CHIN + 0.015)]
-  ];
-  strokePath(ctx, rightOutline, '#a6b1c0', 1.6);
-  strokePath(ctx, mirrorPoints(rightOutline, cx), '#a6b1c0', 1.6);
+  strokePolyline(ctx, right, '#a6b1c0', 1.7);
+  strokePolyline(ctx, left, '#a6b1c0', 1.7);
+  strokePolyline(ctx, sideRight, '#45566e', 0.9);
+  strokePolyline(ctx, sideLeft, '#45566e', 0.9);
 
-  // Slice/cut line for the side plane: hairline -> temple -> cheek.
-  const rightSidePlane = [
-    [sx(0.50 * p.headWidth), sy(HAIRLINE)],
-    [sx(0.60 * p.headWidth * p.templeWidth), sy(BROW)],
-    [sx(0.61 * p.headWidth * p.cheekWidth), sy(-0.07)]
-  ];
-  strokePath(ctx, rightSidePlane, '#516077', 1.0);
-  strokePath(ctx, mirrorPoints(rightSidePlane, cx), '#516077', 1.0);
-
-  // Center line.
   ctx.strokeStyle = '#3c4b5e';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ctx.moveTo(cx, sy(CROWN));
-  ctx.lineTo(cx, sy(CHIN));
+  ctx.lineTo(cx, sy(BOTTOM));
   ctx.stroke();
 
-  // ------------------------------------------------------------------
-  // 2) FIVE-EYE CONSTRUCTION
-  // ------------------------------------------------------------------
-  // The default head is constructed around five eye widths, with one
-  // eye-width between the eyes. Controls are deviations from that scaffold.
-  const eyeHalf = 15.0 * p.eyeWidth;
-  const eyeCenter = eyeHalf * 2.0 * (p.eyeSpacing / 0.29);
-  const eyeY = sy(EYE);
-  const eyeH = 8.0;
+  const eyeHalf = p.headWidth * 0.18 * (p.eyeWidth / 0.92);
+  const eyeCenter = eyeHalf * 2 * (p.eyeSpacing / 0.29);
+  const innerCorner = Math.max(eyeCenter - eyeHalf, p.headWidth * 0.10);
+  const wingHalf = innerCorner * p.noseWidth;
+  const mouthHalf = eyeCenter * p.mouthWidth;
+  const socketRx = eyeHalf * 1.22;
 
+  // Five-eye scaffold.
   ctx.save();
-  ctx.strokeStyle = '#304058';
+  ctx.strokeStyle = '#2c394c';
   ctx.lineWidth = 0.8;
   ctx.setLineDash([2, 4]);
   for (let i = -2; i <= 2; i++) {
-    const x = cx + i * eyeHalf * 2;
-    ctx.strokeRect(x - eyeHalf, eyeY - 11, eyeHalf * 2, 22);
+    const center = i * eyeHalf * 2;
+    const x0 = sx(center - eyeHalf);
+    const x1 = sx(center + eyeHalf);
+    ctx.strokeRect(x0, sy(EYE) - 9, x1 - x0, 18);
   }
   ctx.restore();
 
-  // Eye sockets first, not almond-shaped eyes pasted on the face.
-  const socket = (centerX, flip) => {
-    const outer = centerX + flip * eyeHalf * 1.22;
-    const inner = centerX - flip * eyeHalf * 1.03;
-    const points = [
-      [inner, eyeY - 4],
-      [centerX, eyeY - 9],
-      [outer, eyeY - 5],
-      [outer - flip * 3, eyeY + 7],
-      [centerX, eyeY + 10],
-      [inner + flip * 2, eyeY + 6]
-    ];
-    strokePath(ctx, points, '#75b9e9', 1.25, true);
-  };
-  socket(cx - eyeCenter, -1);
-  socket(cx + eyeCenter, 1);
+  // Socket boundaries.
+  for (const sign of [-1, 1]) {
+    ctx.save();
+    ctx.strokeStyle = '#75b9e9';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.ellipse(sx(sign * eyeCenter), sy(EYE), socketRx * xScale, 17, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
 
-  // Brow blocks / socket roof.
-  strokePath(ctx, [
-    [cx - eyeCenter - eyeHalf, sy(BROW) + 2],
-    [cx - eyeCenter, sy(BROW) - 4],
-    [cx - 4, sy(BROW) + 1]
-  ], '#7a9fc2', 1.1);
-  strokePath(ctx, mirrorPoints([
-    [cx - eyeCenter - eyeHalf, sy(BROW) + 2],
-    [cx - eyeCenter, sy(BROW) - 4],
-    [cx - 4, sy(BROW) + 1]
-  ], cx), '#7a9fc2', 1.1);
+  // Nose top/side planes from the same eye-derived dimensions as CUDA.
+  const rootHalf = wingHalf * 0.27;
+  const lowerTopHalf = wingHalf * 0.43;
+  const lowerSideHalf = wingHalf * 0.80;
+  const rootY = sy(0.09);
+  const lowerY = sy(-0.245);
+  const baseY = sy(NOSE);
 
-  // Keystone / glabella is its own small plane.
-  strokePath(ctx, [
-    [cx, sy(BROW) - 2],
-    [cx - 7, sy(0.12)],
-    [cx, sy(0.07)],
-    [cx + 7, sy(0.12)]
-  ], '#d1a177', 1.15, true);
+  strokePolyline(ctx, [[sx(-rootHalf), rootY], [sx(-lowerTopHalf), lowerY], [sx(-wingHalf * 0.62), baseY]], '#d6a27e', 1.3);
+  strokePolyline(ctx, [[sx( rootHalf), rootY], [sx( lowerTopHalf), lowerY], [sx( wingHalf * 0.62), baseY]], '#d6a27e', 1.3);
+  strokePolyline(ctx, [[sx(-rootHalf), rootY], [sx(-lowerSideHalf), lowerY], [sx(-wingHalf), baseY]], '#8f6d59', 0.95);
+  strokePolyline(ctx, [[sx( rootHalf), rootY], [sx( lowerSideHalf), lowerY], [sx( wingHalf), baseY]], '#8f6d59', 0.95);
 
-  // ------------------------------------------------------------------
-  // 3) NOSE AS A BOX/WEDGE
-  // ------------------------------------------------------------------
-  const innerCorner = Math.max(eyeCenter - eyeHalf, 9);
-  const wingHalf = innerCorner * p.noseWidth;
-  const rootHalf = wingHalf * 0.28;
-  const dorsumHalf = wingHalf * 0.44;
-  const rootY = sy(0.085);
-  const lowerDorsumY = sy(-0.235);
-  const noseY = sy(NOSE);
-
-  // Top plane edges.
-  strokePath(ctx, [
-    [cx - rootHalf, rootY],
-    [cx - dorsumHalf, lowerDorsumY],
-    [cx - wingHalf * 0.45, noseY - 6]
-  ], '#d6a27e', 1.35);
-  strokePath(ctx, mirrorPoints([
-    [cx - rootHalf, rootY],
-    [cx - dorsumHalf, lowerDorsumY],
-    [cx - wingHalf * 0.45, noseY - 6]
-  ], cx), '#d6a27e', 1.35);
-
-  // Wide side planes and alar wings.
-  strokePath(ctx, [
-    [cx - rootHalf, rootY],
-    [cx - wingHalf * 0.72, lowerDorsumY],
-    [cx - wingHalf, noseY],
-    [cx - wingHalf * 0.45, noseY - 6]
-  ], '#936f58', 1.0);
-  strokePath(ctx, mirrorPoints([
-    [cx - rootHalf, rootY],
-    [cx - wingHalf * 0.72, lowerDorsumY],
-    [cx - wingHalf, noseY],
-    [cx - wingHalf * 0.45, noseY - 6]
-  ], cx), '#936f58', 1.0);
-
-  // Bottom plane / rhythm between nostrils.
-  ctx.strokeStyle = '#b98469';
-  ctx.lineWidth = 1.1;
-  ctx.beginPath();
-  ctx.moveTo(cx - wingHalf, noseY);
-  ctx.quadraticCurveTo(cx - wingHalf * 0.45, noseY + 4, cx, noseY + 1);
-  ctx.quadraticCurveTo(cx + wingHalf * 0.45, noseY + 4, cx + wingHalf, noseY);
-  ctx.stroke();
-
-  // ------------------------------------------------------------------
-  // 4) DENTURE CYLINDER + MOUTH
-  // ------------------------------------------------------------------
-  const mouthHalf = eyeCenter * p.mouthWidth;
-  const mouthY = sy(MOUTH);
+  // Denture cylinder and mouth construction.
   ctx.save();
-  ctx.strokeStyle = '#3f4d60';
-  ctx.lineWidth = 0.9;
+  ctx.strokeStyle = '#405067';
   ctx.setLineDash([3, 4]);
+  ctx.lineWidth = 0.9;
   ctx.beginPath();
-  ctx.ellipse(cx, mouthY - 3, mouthHalf * 1.12, 28, 0, Math.PI * 0.10, Math.PI * 0.90);
+  ctx.ellipse(cx, sy(-0.465), mouthHalf * 1.10 * xScale, 25, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 
-  // Mouth corners track approximately under pupil/eye-center construction.
   ctx.strokeStyle = '#bc7c86';
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = 1.15;
   ctx.beginPath();
-  ctx.moveTo(cx - mouthHalf, mouthY);
+  ctx.moveTo(sx(-mouthHalf), sy(MOUTH));
   ctx.bezierCurveTo(
-    cx - mouthHalf * 0.45, mouthY - 2.5 * p.upperLip,
-    cx - mouthHalf * 0.18, mouthY - 4.0 * p.upperLip,
-    cx, mouthY - 2.0 * p.upperLip);
+    sx(-mouthHalf * 0.45), sy(MOUTH + 0.015),
+    sx(-mouthHalf * 0.18), sy(MOUTH + 0.022),
+    cx, sy(MOUTH + 0.012)
+  );
   ctx.bezierCurveTo(
-    cx + mouthHalf * 0.18, mouthY - 4.0 * p.upperLip,
-    cx + mouthHalf * 0.45, mouthY - 2.5 * p.upperLip,
-    cx + mouthHalf, mouthY);
-  ctx.bezierCurveTo(
-    cx + mouthHalf * 0.38, mouthY + 5.0 * p.lowerLip,
-    cx - mouthHalf * 0.38, mouthY + 5.0 * p.lowerLip,
-    cx - mouthHalf, mouthY);
+    sx(mouthHalf * 0.18), sy(MOUTH + 0.022),
+    sx(mouthHalf * 0.45), sy(MOUTH + 0.015),
+    sx(mouthHalf), sy(MOUTH)
+  );
   ctx.stroke();
 
-  // Chin mass and labiomental break.
-  ellipse(ctx, cx, sy(-0.72), 24, 17, '#8a776d', 0.65);
-  strokePath(ctx, [
-    [cx - 21, sy(-0.61)],
-    [cx, sy(-0.625)],
-    [cx + 21, sy(-0.61)]
-  ], '#5b4f4a', 0.9);
-
   ctx.fillStyle = '#6a7789';
-  ctx.font = '8px ui-monospace,monospace';
-  ctx.fillText('helmet → sockets → wedge → denture', 12, h - 10);
+  ctx.font = '8px ui-monospace, monospace';
+  ctx.fillText('exact CUDA silhouette + landmark scaffold', 10, h - 9);
 }
 
 function drawProfile(canvas, p) {
   const { ctx, w, h } = setup(canvas);
-  const cx = 128;
-  const top = 28;
-  const bottom = h - 28;
+  const baseX = 108;
+  const top = 27;
+  const bottom = h - 27;
   const H = bottom - top;
+  const sy = y => top + ((CROWN - y) / (CROWN - BOTTOM)) * H;
+  const depthScale = 120;
+  const sz = z => baseX + z * depthScale;
 
-  const sy = n => top + ((CROWN - n) / (CROWN - CHIN)) * H;
-  const front = d => cx + d * 72;
-  const back = d => cx - d * 80;
-
-  for (const [n, name, strong] of [
+  for (const [y, label, strong] of [
     [HAIRLINE, 'HAIR', false],
     [BROW, 'BROW', true],
     [EYE, 'EYES / MID', true],
     [NOSE, 'NOSE', true],
     [MOUTH, 'MOUTH', false],
     [CHIN, 'CHIN', true]
+  ]) guide(ctx, sy(y), 15, w - 15, label, strong);
+
+  // Exact CUDA center-profile constraint.
+  const profile = [];
+  for (let i = 0; i <= 150; i++) {
+    const y = CROWN + (BOTTOM - CROWN) * (i / 150);
+    profile.push([sz(centerProfileDepth(y, p)), sy(y)]);
+  }
+  strokePolyline(ctx, profile, '#d7e0ea', 1.8);
+
+  // Schematic back of cranium only; the front curve above is exact.
+  ctx.save();
+  ctx.strokeStyle = '#56667b';
+  ctx.lineWidth = 1.1;
+  ctx.beginPath();
+  ctx.moveTo(baseX, sy(CROWN));
+  ctx.bezierCurveTo(baseX - 54, sy(0.84), baseX - 82, sy(0.40), baseX - 73, sy(-0.08));
+  ctx.bezierCurveTo(baseX - 62, sy(-0.42), baseX - 34, sy(-0.70), baseX - 10, sy(BOTTOM));
+  ctx.stroke();
+  ctx.restore();
+
+  for (const [y, label, color] of [
+    [0.18, 'GLABELLA', '#91a8c0'],
+    [0.085, 'NASION', '#d6a27e'],
+    [-0.245, 'DORSUM', '#d6a27e'],
+    [-0.275, 'TIP', '#d6a27e'],
+    [-0.32, 'BASE', '#d6a27e'],
+    [-0.49, 'MOUTH', '#bc7c86'],
+    [-0.60, 'GROOVE', '#8d817b'],
+    [-0.72, 'CHIN', '#8d817b']
   ]) {
-    guide(ctx, sy(n), 17, w - 17, name, strong);
+    const x = sz(centerProfileDepth(y, p));
+    dot(ctx, x, sy(y), color);
+    ctx.fillStyle = color;
+    ctx.font = '7px ui-monospace, monospace';
+    ctx.fillText(label, x + 5, sy(y) - 3);
   }
 
-  // ------------------------------------------------------------------
-  // 1) CRANIUM + SIDE-PLANE CUT
-  // ------------------------------------------------------------------
-  ctx.strokeStyle = '#66758a';
-  ctx.lineWidth = 1.3;
-  ctx.beginPath();
-  ctx.moveTo(cx, sy(CROWN));
-  ctx.bezierCurveTo(
-    back(0.67 * p.headDepth), sy(0.88),
-    back(0.93 * p.headDepth), sy(0.46),
-    back(0.83 * p.headDepth), sy(0.03));
-  ctx.bezierCurveTo(
-    back(0.73 * p.headDepth), sy(-0.32),
-    back(0.46 * p.headDepth), sy(-0.66),
-    back(0.15), sy(CHIN));
-  ctx.stroke();
+  // Construction masses.
+  const eyeHalf = p.headWidth * 0.18 * (p.eyeWidth / 0.92);
 
-  // Temporal side plane ellipse/cut.
   ctx.save();
-  ctx.strokeStyle = '#3f4d61';
+  ctx.strokeStyle = '#75b9e9';
+  ctx.globalAlpha = 0.8;
   ctx.lineWidth = 1;
-  ctx.setLineDash([3, 4]);
   ctx.beginPath();
-  ctx.ellipse(back(0.33 * p.headDepth), sy(0.26), 38, 70, -0.03, 0, TAU);
+  ctx.arc(sz(baseProfileDepth(EYE, p) - 0.01), sy(EYE), eyeHalf * 34, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 
-  // ------------------------------------------------------------------
-  // 2) PROFILE LANDMARKS / ANGLE CHANGES
-  // ------------------------------------------------------------------
-  // Plot the profile as a sequence of actual construction landmarks:
-  // forehead -> glabella -> nasion -> dorsum -> tip -> subnasale ->
-  // philtrum -> lips -> labiomental groove -> chin.
-  const forehead = [front(0.17), sy(0.55)];
-  const glabella = [front(0.22 * p.browProjection), sy(BROW)];
-  const nasion = [front(0.12), sy(0.095)];
-  const dorsum = [front(0.30 * p.noseProjection), sy(-0.13)];
-  const tip = [front(0.47 * p.noseProjection), sy(-0.275)];
-  const subnasale = [front(0.25 * p.noseProjection), sy(-0.35)];
-  const philtrum = [front(0.23 * p.muzzleProjection), sy(-0.42)];
-  const upperLip = [front(0.30 * p.muzzleProjection), sy(MOUTH)];
-  const lowerLip = [front(0.29 * p.muzzleProjection), sy(MOUTH - 0.06)];
-  const groove = [front(0.20), sy(-0.615)];
-  const chin = [front(0.27 * p.chinProjection), sy(-0.72)];
-  const chinBottom = [front(0.17 * p.chinProjection), sy(CHIN)];
-
-  ctx.strokeStyle = '#d4dee9';
-  ctx.lineWidth = 1.8;
-  ctx.beginPath();
-  ctx.moveTo(cx, sy(CROWN));
-  ctx.bezierCurveTo(front(0.24), sy(0.82), front(0.20), sy(0.68), forehead[0], forehead[1]);
-  ctx.lineTo(glabella[0], glabella[1]);
-  ctx.lineTo(nasion[0], nasion[1]);
-  ctx.lineTo(dorsum[0], dorsum[1]);
-  ctx.lineTo(tip[0], tip[1]);
-  ctx.lineTo(subnasale[0], subnasale[1]);
-  ctx.lineTo(philtrum[0], philtrum[1]);
-  ctx.lineTo(upperLip[0], upperLip[1]);
-  ctx.lineTo(lowerLip[0], lowerLip[1]);
-  ctx.lineTo(groove[0], groove[1]);
-  ctx.lineTo(chin[0], chin[1]);
-  ctx.lineTo(chinBottom[0], chinBottom[1]);
-  ctx.stroke();
-
-  // Nasion/saddle is intentionally marked: the nose starts after a recess,
-  // not as one uninterrupted forehead-to-tip bridge.
-  ellipse(ctx, nasion[0], nasion[1], 3.1, 3.1, '#d6a27e', 1);
-  ctx.fillStyle = '#b98c6d';
-  ctx.font = '7px ui-monospace,monospace';
-  ctx.fillText('NASION', nasion[0] + 7, nasion[1] - 3);
-
-  // Nose box/wedge construction. The side plane is deliberately broad.
-  strokePath(ctx, [
-    nasion,
-    dorsum,
-    tip,
-    subnasale
-  ], '#d6a27e', 1.25);
-  strokePath(ctx, [
-    [nasion[0] - 8, nasion[1] + 2],
-    [dorsum[0] - 11, dorsum[1] + 4],
-    [tip[0] - 13, tip[1] + 2],
-    subnasale
-  ], '#8f6d59', 1.0);
-
-  // Socket/eyeball relationship: sphere tucked behind the brow awning.
-  ellipse(ctx, front(0.08), sy(EYE), 10, 10, '#75b9e9', 0.85);
-  strokePath(ctx, [
-    [front(0.02), sy(BROW)],
-    [front(0.15 * p.browProjection), sy(BROW) + 2],
-    [front(0.13), sy(EYE) - 8]
-  ], '#7596b5', 1.0);
-
-  // Denture / tooth cylinder under the lips.
   ctx.save();
-  ctx.strokeStyle = '#455469';
+  ctx.strokeStyle = '#405067';
   ctx.setLineDash([3, 4]);
-  ctx.lineWidth = 1;
+  ctx.lineWidth = 0.9;
   ctx.beginPath();
-  ctx.ellipse(front(0.11), sy(-0.47), 22, 42, 0.10, -Math.PI * 0.50, Math.PI * 0.50);
+  ctx.ellipse(sz(baseProfileDepth(-0.47, p) - 0.015), sy(-0.47), 18, 37, 0.08, -Math.PI / 2, Math.PI / 2);
   ctx.stroke();
   ctx.restore();
-
-  // Jaw construction from the side plane toward the chin.
-  strokePath(ctx, [
-    [back(0.28), sy(-0.34)],
-    [back(0.22), sy(-0.57)],
-    [front(0.02), sy(-0.76)],
-    chinBottom
-  ], '#7a8798', 1.15);
 
   ctx.fillStyle = '#6a7789';
-  ctx.font = '8px ui-monospace,monospace';
-  ctx.fillText('profile = angle changes, not one curve', 12, h - 10);
+  ctx.font = '8px ui-monospace, monospace';
+  ctx.fillText('exact CUDA center-profile constraint', 10, h - 9);
 }
