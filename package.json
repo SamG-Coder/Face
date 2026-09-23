@@ -6,6 +6,7 @@
   "description": "Procedural human face construction in CUDA WebShader with a raw WebGPU renderer.",
   "scripts": {
     "sync:webshader": "node scripts/sync-webshader.mjs",
+    "check": "npm run sync:webshader && node scripts/check.mjs",
     "start": "npm run sync:webshader && node scripts/serve.mjs",
     "build": "npm run sync:webshader && node scripts/build.mjs"
   },
