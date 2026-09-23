@@ -79,6 +79,34 @@
     </div>
   </div>
 
+  <script>
+    (() => {
+      const showBootError = value => {
+        const fatal = document.querySelector('#fatal');
+        const fatalText = document.querySelector('#fatalText');
+        const status = document.querySelector('#status');
+        if (status) status.className = 'status error';
+        if (fatal && fatalText) {
+          fatal.hidden = false;
+          fatalText.textContent = value instanceof Error ? (value.stack || value.message) : String(value);
+        }
+      };
+
+      window.addEventListener('error', event => {
+        showBootError(event.error || event.message || 'The Face JavaScript module failed to load.');
+      });
+      window.addEventListener('unhandledrejection', event => {
+        showBootError(event.reason || 'Unhandled startup rejection.');
+      });
+
+      setTimeout(() => {
+        const text = document.querySelector('#status span:last-child')?.textContent || '';
+        if (text.includes('Starting WebGPU')) {
+          showBootError('The application module did not start. Reload the page once to clear an older GitHub Pages cache.');
+        }
+      }, 5000);
+    })();
+  </script>
   <script type="module" src="./src/app.js"></script>
 </body>
 </html>
