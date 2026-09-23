@@ -54,14 +54,20 @@ function drawFront(canvas, p) {
 
   ctx.strokeStyle = '#9aa9bb';
   ctx.lineWidth = 1.6;
+
   ctx.beginPath();
   ctx.moveTo(cx, top);
   ctx.bezierCurveTo(sx(.72*p.headWidth), top+4, sx(.86*p.headWidth), sy(.35), sx(.73*p.cheekWidth), sy(.05));
   ctx.bezierCurveTo(sx(.67*p.cheekWidth), sy(-.22), sx(.55*p.jawWidth), sy(-.58), sx(.18), bottom-3);
   ctx.bezierCurveTo(cx+9, bottom+1, cx+5, bottom+3, cx, bottom+3);
   ctx.stroke();
-  ctx.save();
-  ctx.translate(w,0); ctx.scale(-1,1); ctx.drawImage(canvas,0,0,w/2,h,0,0,w/2,h); ctx.restore();
+
+  ctx.beginPath();
+  ctx.moveTo(cx, top);
+  ctx.bezierCurveTo(sx(-.72*p.headWidth), top+4, sx(-.86*p.headWidth), sy(.35), sx(-.73*p.cheekWidth), sy(.05));
+  ctx.bezierCurveTo(sx(-.67*p.cheekWidth), sy(-.22), sx(-.55*p.jawWidth), sy(-.58), sx(-.18), bottom-3);
+  ctx.bezierCurveTo(cx-9, bottom+1, cx-5, bottom+3, cx, bottom+3);
+  ctx.stroke();
 
   ctx.strokeStyle = '#3c4b5e';
   ctx.lineWidth = 1;
