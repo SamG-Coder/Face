@@ -44,7 +44,7 @@ h1{font-size:20px;line-height:1;margin:0;letter-spacing:.08em;font-weight:800}
 .viewport-meta span{font:700 8px ui-monospace,monospace;color:var(--muted);letter-spacing:.12em}
 .viewport-meta strong{font:700 10px ui-monospace,monospace;color:#cdd6e2}
 .drag-help{position:absolute;right:16px;bottom:18px;color:var(--muted);font:650 9px ui-monospace,monospace;letter-spacing:.04em}
-.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:15px}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:15px}\n.control-section-title{padding:12px 0 5px;color:#607087;font:800 8px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase}
 .actions button{border:1px solid var(--line2);background:#151b24;border-radius:7px;padding:8px 10px;font-size:10px;font-weight:750;cursor:pointer}
 .actions button:first-child{border-color:#315e59;color:#adf1d8;background:#11201f}
 .control-group{border-top:1px solid var(--line);padding:11px 0}
