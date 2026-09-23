@@ -1,4 +1,3 @@
-import { GpuRuntime } from '../vendor/webshader/runtime/runtime.js';
 import { createFaceRenderer, makeTopology } from './face-renderer.js';
 import { drawConstruction } from './construction.js';
 
@@ -196,8 +195,22 @@ function animationFrame() {
   requestAnimationFrame(animationFrame);
 }
 
+async function loadGpuRuntime() {
+  setStatus('Loading CUDA WebShader runtime…');
+
+  try {
+    return await import('../vendor/webshader/runtime/runtime.js');
+  } catch (localError) {
+    console.warn('Local WebShader runtime is unavailable; using the pinned GitHub Pages CDN copy.', localError);
+  }
+
+  return await import('https://cdn.jsdelivr.net/gh/SamG-Coder/cuda-webshader@f45a967480f0bcd8a2c9bd441e509745f94dd795/src/runtime/runtime.js');
+}
+
 async function start() {
-  if (!navigator.gpu) throw new Error('WebGPU is unavailable. Use a current WebGPU-capable browser on localhost or HTTPS.');
+  if (!navigator.gpu) throw new Error('WebGPU is unavailable in this browser. On Android, open the site in a current Chrome build with WebGPU support.');
+
+  const { GpuRuntime } = await loadGpuRuntime();
 
   setStatus('Creating WebGPU device…');
   runtime = await GpuRuntime.create({
