@@ -1,0 +1,16 @@
+{
+  "name": "face-webcuda",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Procedural human face construction in CUDA WebShader with a raw WebGPU renderer.",
+  "scripts": {
+    "sync:webshader": "node scripts/sync-webshader.mjs",
+    "start": "npm run sync:webshader && node scripts/serve.mjs",
+    "build": "npm run sync:webshader && node scripts/build.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
